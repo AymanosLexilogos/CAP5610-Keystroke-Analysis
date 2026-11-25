@@ -1,0 +1,21 @@
+# Dataset (download separately, see README)
+data/*.csv
+datasets/*.csv
+
+# Run outputs: everything except the run index and the final report figures
+outputs/*
+!outputs/runs_index.csv
+!outputs/report_figures/
+
+# Python / Jupyter
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+*.egg-info/
+
+# Model checkpoints anywhere
+*.pt
+*.pth
+*.joblib
+*.npz

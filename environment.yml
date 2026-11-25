@@ -1,0 +1,16 @@
+name: keystroke-gmm
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - jupyterlab
+  - ipykernel
+  - nbconvert
+  - pytest
+  - joblib
+  - pytorch  # CPU build is selected automatically when no CUDA is present
