@@ -241,22 +241,32 @@ def make_split(u: int, protocol: str = "test", fold: int | None = None,
     raise ValueError(protocol)
 
 
-def shared_population_rows(protocol: str, fold: int | None = None, folds=None) -> np.ndarray:
-    """Population used by models that pretrain ONE model for all users (flow).
+def fold_of(u: int, folds=None) -> int:
+    folds = folds if folds is not None else openset_folds()
+    return next(f for f, members in enumerate(folds) if u in members)
 
-    Includes each target user's own training typings (legitimate), excludes all
-    impostor test typings and sessions 5-8; for 'val' also excludes the
-    validation genuine (161-200) and validation impostor (6-10) typings.
+
+def pretrain_population_rows(protocol: str, u: int, fold: int | None = None,
+                             folds=None) -> tuple[tuple, np.ndarray]:
+    """Population for models pretrained once and shared by many users (the flow).
+
+    Returns (cache_key, rows). To keep pretraining affordable (3 runs, not 51)
+    but never include the target user:
+      val     : users outside u's fold, typings 11-200 (no 1-5 test, no 6-10 val impostors)
+      test    : users outside u's fold, typings 6-200  (no impostor test typings)
+      openset : users outside the held-out fold, typings 1-200. This includes the
+                target's own 200 training typings (legitimate training data).
     """
+    folds = folds if folds is not None else openset_folds()
     allu = np.arange(N_USERS)
-    if protocol == "val":
-        return rows(allu, IMP_VAL[1] + 1, VAL_TRAIN_END)
-    if protocol == "test":
-        return rows(allu, N_IMP_TEST + 1, TRAIN_END)
+    if protocol in ("val", "test"):
+        f = fold_of(u, folds)
+        keep = np.setdiff1d(allu, folds[f])
+        lo = IMP_VAL[1] + 1 if protocol == "val" else N_IMP_TEST + 1
+        return (protocol, f), rows(keep, lo, TRAIN_END)
     if protocol == "openset":
-        folds = folds if folds is not None else openset_folds()
         keep = np.setdiff1d(allu, folds[fold])
-        return rows(keep, 1, TRAIN_END)
+        return (protocol, fold), rows(keep, 1, TRAIN_END)
     raise ValueError(protocol)
 
 

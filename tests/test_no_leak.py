@@ -40,16 +40,18 @@ def test_openset_folds():
             assert not np.isin(USR(sp.population), held).any()
             assert u not in set(USR(sp.population))
             U.check_no_leak("openset", u, sp.train, sp.population, fold=f)
-        pop = U.shared_population_rows("openset", f)
-        assert not np.isin(USR(pop), held).any() and T(pop).max() <= 200
+        for u in np.setdiff1d(np.arange(51), held)[:3]:
+            _, pop = U.pretrain_population_rows("openset", u, fold=f)
+            assert not np.isin(USR(pop), held).any() and T(pop).max() <= 200
+            U.check_no_leak("openset", u, U.rows(u, 1, 200), pop, fold=f)
 
 
-def test_shared_population():
-    pt = U.shared_population_rows("test")
-    assert T(pt).min() == 6 and T(pt).max() == 200
-    pv = U.shared_population_rows("val")
-    assert T(pv).min() == 11 and T(pv).max() == 160
+def test_pretrain_population():
     for u in range(51):
+        _, pt = U.pretrain_population_rows("test", u)
+        assert T(pt).min() == 6 and T(pt).max() == 200 and u not in set(USR(pt))
+        _, pv = U.pretrain_population_rows("val", u)
+        assert T(pv).min() == 11 and T(pv).max() == 200 and u not in set(USR(pv))
         U.check_no_leak("test", u, U.rows(u, 1, 200), pt)
         U.check_no_leak("val", u, U.rows(u, 1, 160), pv)
 
