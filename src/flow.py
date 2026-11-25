@@ -193,6 +193,14 @@ class FlowDetector(Detector):
                 "best_epoch": self.best_epoch_, "history": self.history_}
 
 
+_PRETRAIN_CACHE: dict = {}  # (protocol/fold key, pretrain params, data fingerprint) -> pretrained
+
+
+def pretrained_models():
+    """All pretrained population flows built so far (for saving)."""
+    return {f"{k[0][0]}_fold{k[0][1]}": v for k, v in _PRETRAIN_CACHE.items()}
+
+
 class FlowSpec:
     """Model spec for the flow (works with evaluation.evaluate).
 
@@ -206,7 +214,6 @@ class FlowSpec:
         self.pretrain = pretrain
         self.pretrain_params = dict(pretrain_params or {})
         self.name = name + (" (pretrained)" if pretrain else "")
-        self.cache = {}
 
     def label(self):
         return f"{self.name}({', '.join(f'{k}={v}' for k, v in self.params.items())})"
@@ -220,7 +227,9 @@ class FlowSpec:
         pre = None
         if self.pretrain:
             key, rows = U.pretrain_population_rows(ctx["protocol"], ctx["user"], ctx["fold"])
-            if key not in self.cache:
-                self.cache[key] = pretrain(ctx["X"][rows], **self.pretrain_params)
-            pre = self.cache[key]
+            Xp = ctx["X"][rows]
+            ck = (key, tuple(sorted(self.pretrain_params.items())), Xp.shape, float(Xp.sum()))
+            if ck not in _PRETRAIN_CACHE:
+                _PRETRAIN_CACHE[ck] = pretrain(Xp, **self.pretrain_params)
+            pre = _PRETRAIN_CACHE[ck]
         return FlowDetector(**self.params, pretrained=pre, X_val=ctx.get("X_val"))
