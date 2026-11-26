@@ -122,12 +122,15 @@ def det_curves(results: dict, title="DET (vertical average over users)"):
     grid_far = np.logspace(-3, 0, 200)
     fig, ax = plt.subplots(figsize=(6, 6))
     for lab, r in results.items():
+        # Scores are not comparable across users (each user has its own model), so
+        # pooling them would be misleading. Instead: one DET per user, read off at a
+        # common FAR grid, then average the FRRs ("vertical averaging").
         frrs = []
         for g, i in r.scores.values():
             _, far, frr = U.det_curve(g, i)
             o = np.argsort(far)
             frrs.append(np.interp(grid_far, far[o], frr[o]))
-        f = np.clip(np.mean(frrs, axis=0), 1e-4, 1 - 1e-4)
+        f = np.clip(np.mean(frrs, axis=0), 1e-4, 1 - 1e-4)  # clip: probit axes can't show 0 or 1
         ax.plot(norm.ppf(np.clip(grid_far, 1e-4, 1 - 1e-4)), norm.ppf(f),
                 label=f"{lab} (EER {r.eers.mean():.3f})")
     ticks = np.array([0.001, 0.01, 0.05, 0.1, 0.2, 0.4])

@@ -153,7 +153,11 @@ class Standardizer:
 # Splits
 # --------------------------------------------------------------------------
 def rows(user_idx, lo: int, hi: int) -> np.ndarray:
-    """Row positions of typings lo..hi (1-based, inclusive) for one or many users."""
+    """Row positions of typings lo..hi (1-based, inclusive) for one or many users.
+
+    The DataFrame is sorted and complete (checked in load_data), so user u's typing t
+    sits at row u * 400 + (t - 1). This lets every split be pure index arithmetic.
+    """
     user_idx = np.atleast_1d(np.asarray(user_idx, int))
     t = np.arange(lo, hi + 1)
     return (user_idx[:, None] * N_TYPINGS + (t - 1)[None, :]).ravel()
@@ -313,14 +317,19 @@ def det_curve(genuine, impostor):
 
 
 def eer(genuine, impostor) -> float:
-    """Equal error rate, linearly interpolated at the FAR/FRR crossing."""
+    """Equal error rate, linearly interpolated at the FAR/FRR crossing.
+
+    As the threshold rises, FAR falls and FRR rises. Find the first threshold
+    where FAR <= FRR and interpolate between it and the one before, at the point
+    where the two curves meet.
+    """
     _, far, frr = det_curve(genuine, impostor)
     d = far - frr                    # decreasing in threshold
     k = int(np.argmax(d <= 0))       # first threshold with FAR <= FRR
-    if k == 0:
+    if k == 0:                       # curves already crossed at the lowest threshold
         return float((far[0] + frr[0]) / 2)
     d0, d1 = d[k - 1], d[k]
-    w = d0 / (d0 - d1) if d0 != d1 else 0.5
+    w = d0 / (d0 - d1) if d0 != d1 else 0.5   # fraction of the way from k-1 to k
     return float(far[k - 1] + w * (far[k] - far[k - 1]))
 
 
@@ -331,6 +340,7 @@ def eer_threshold(genuine, impostor) -> float:
 
 
 def bootstrap_ci(values, n_boot: int = 10000, alpha: float = 0.05, seed: int = 0):
+    """Percentile bootstrap CI of the mean, resampling users with replacement."""
     v = np.asarray(values, float)
     rng = np.random.default_rng(seed)
     means = v[rng.integers(0, len(v), size=(n_boot, len(v)))].mean(axis=1)

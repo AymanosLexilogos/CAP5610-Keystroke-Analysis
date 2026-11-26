@@ -52,6 +52,7 @@ def _ridge(cov, reg):
 
 
 def mvn_logpdf(X, mu, cov):
+    """Row-wise log N(x; mu, cov) via Cholesky (fails loudly if cov is not PD)."""
     L = np.linalg.cholesky(cov)
     Z = np.linalg.solve(L, (X - mu).T)
     logdet = 2 * np.log(np.diag(L)).sum()
@@ -59,6 +60,7 @@ def mvn_logpdf(X, mu, cov):
 
 
 def mvt_logpdf(X, mu, scale, nu):
+    """Row-wise log of the multivariate Student-t density (scale matrix, nu dof)."""
     d = len(mu)
     L = np.linalg.cholesky(scale)
     Z = np.linalg.solve(L, (X - mu).T)
@@ -131,6 +133,8 @@ class Mahalanobis(Detector):
 
     def fit(self, X):
         self.mean_ = X.mean(axis=0)
+        # On raw31 the covariance has rank 21 (UD = DD - H), so a plain inverse fails;
+        # the pseudo-inverse ignores the 10 null directions.
         self.prec_ = np.linalg.pinv(np.cov(X, rowvar=False), rcond=self.rcond, hermitian=True)
         return self
 
@@ -237,13 +241,19 @@ class BayesGaussian(Detector):
         n, d = X.shape
         k0 = self.kappa0
         nu0 = d + 1 + self.nu_extra
+        # Prior scale chosen so that the prior mean of Sigma equals the pooled within-user cov.
         psi0 = (nu0 - d - 1) * self.Sw_
         xbar = X.mean(axis=0)
         C = X - xbar
+
+        # Standard conjugate NIW update (e.g. Murphy 2007, sec. 9):
         kn, nun = k0 + n, nu0 + n
-        self.mean_ = (k0 * self.m0_ + n * xbar) / kn
+        self.mean_ = (k0 * self.m0_ + n * xbar) / kn            # posterior mean
         dm = (xbar - self.m0_)[:, None]
-        psin = psi0 + C.T @ C + (k0 * n / kn) * (dm @ dm.T)
+        psin = psi0 + C.T @ C + (k0 * n / kn) * (dm @ dm.T)      # posterior scale matrix
+
+        # Posterior predictive of a new typing is a Student-t:
+        #   t_{nu_n - d + 1}(mean_n, psi_n (k_n + 1) / (k_n (nu_n - d + 1)))
         self.df_ = nun - d + 1
         self.scale_ = psin * (kn + 1) / (kn * self.df_)
         self.map_cov_ = psin / (nun + d + 1)  # MAP covariance (for plots)
@@ -261,6 +271,7 @@ class BayesGaussian(Detector):
 
 
 def _sample_t(rng, mu, scale, nu, n):
+    """Student-t draw = Gaussian draw divided by sqrt(chi2_nu / nu)."""
     z = rng.multivariate_normal(np.zeros(len(mu)), scale, size=n)
     g = rng.chisquare(nu, size=n) / nu
     return mu + z / np.sqrt(g)[:, None]
@@ -281,9 +292,12 @@ class StudentT(Detector):
         base = self.reg * np.trace(np.cov(X, rowvar=False)) / d
         prev = -np.inf
         for it in range(self.max_iter):
+            # E-step: squared Mahalanobis distances -> per-typing weights.
+            # Outlying typings (large delta) get small weights, which is the robustness.
             L = np.linalg.cholesky(S)
             delta = (np.linalg.solve(L, (X - mu).T) ** 2).sum(axis=0)
             w = (self.nu + d) / (self.nu + delta)
+            # M-step: weighted mean and weighted scatter (+ a fixed ridge).
             mu = (w[:, None] * X).sum(axis=0) / w.sum()
             C = X - mu
             S = (w[:, None] * C).T @ C / n + base * np.eye(d)
@@ -319,10 +333,10 @@ class GMM(Detector):
     def fit(self, X):
         self.std_ = Standardizer().fit(X)
         Z = self.std_.transform(X)
-        kmax = min(self.k_max, 2) if len(X) < 50 else self.k_max
+        kmax = min(self.k_max, 2) if len(X) < 50 else self.k_max  # too little data for K=3
         self.bic_ = {}
         best = None
-        for k in range(1, kmax + 1):
+        for k in range(1, kmax + 1):  # fit K = 1..kmax and keep the lowest BIC
             g = GaussianMixture(k, covariance_type="full", reg_covar=self.reg_covar,
                                 n_init=self.n_init, random_state=self.seed).fit(Z)
             self.bic_[k] = float(g.bic(Z))

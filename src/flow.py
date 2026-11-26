@@ -23,6 +23,14 @@ LOG2PI = float(np.log(2 * np.pi))
 
 
 class Coupling(nn.Module):
+    """Affine coupling layer.
+
+    Features where mask == 1 pass through unchanged and condition a small MLP;
+    the MLP outputs a log-scale s and shift t for the other features:
+        y = x_m + (1 - m) * (x * exp(s(x_m)) + t(x_m)),   log|det J| = sum(s).
+    Because s, t depend only on the unchanged half, the inverse is exact and cheap.
+    """
+
     def __init__(self, d: int, mask: torch.Tensor, hidden: int):
         super().__init__()
         self.register_buffer("mask", mask)
@@ -35,7 +43,8 @@ class Coupling(nn.Module):
     def _st(self, xm):
         s, t = self.net(xm).chunk(2, dim=1)
         inv = 1 - self.mask
-        return 2.0 * torch.tanh(s / 2.0) * inv, t * inv  # bounded log-scale
+        # 2*tanh(s/2) bounds the log-scale to (-2, 2): keeps training stable on ~200 points
+        return 2.0 * torch.tanh(s / 2.0) * inv, t * inv
 
     def forward(self, x):
         xm = x * self.mask
@@ -49,16 +58,25 @@ class Coupling(nn.Module):
 
 
 class RealNVP(nn.Module):
+    """Stack of coupling layers followed by a learnable elementwise affine map.
+
+    x --coupling x n_layers--> h --(h * exp(log_a) + b)--> z ~ N(0, I).
+    The final affine layer lets the flow represent a diagonal Gaussian from the
+    start (the couplings are initialised to the identity).
+    """
+
     def __init__(self, d: int, n_layers: int = 4, hidden: int = 32):
         super().__init__()
         idx = torch.arange(d)
         masks = []
         for i in range(n_layers):
+            # Mask pattern per layer: even/odd, odd/even, first/second half, second/first half, ...
+            # so every feature is transformed and every pair of features can interact.
             m = (idx % 2 == 0) if (i // 2) % 2 == 0 else (idx < d // 2)
             masks.append((m if i % 2 == 0 else ~m).float())
         self.layers = nn.ModuleList(Coupling(d, m, hidden) for m in masks)
-        self.log_a = nn.Parameter(torch.zeros(d))
-        self.b = nn.Parameter(torch.zeros(d))
+        self.log_a = nn.Parameter(torch.zeros(d))  # final elementwise log-scale
+        self.b = nn.Parameter(torch.zeros(d))      # final elementwise shift
 
     def forward(self, x):
         logdet = torch.zeros(x.shape[0], dtype=x.dtype)
@@ -69,6 +87,7 @@ class RealNVP(nn.Module):
         return z, logdet + self.log_a.sum()
 
     def log_prob(self, x):
+        """Change of variables: log p(x) = log N(z; 0, I) + log|det dz/dx|."""
         z, logdet = self(x)
         return -0.5 * (z ** 2).sum(dim=1) - 0.5 * z.shape[1] * LOG2PI + logdet
 
@@ -83,6 +102,7 @@ class RealNVP(nn.Module):
 
 
 def _t(a):
+    """numpy -> float32 CPU tensor."""
     return torch.as_tensor(np.asarray(a), dtype=torch.float32, device=DEVICE)
 
 
@@ -98,22 +118,27 @@ def train_flow(model, Ztr, Zval=None, epochs=300, lr=3e-3, weight_decay=1e-3,
     bs = n if batch_size is None or batch_size >= n else batch_size
     hist, best, best_state, best_ep, bad = [], np.inf, None, epochs, 0
     for ep in range(1, epochs + 1):
+        # --- one pass over the training data (full batch for per-user fits) ---
         model.train()
         perm = torch.randperm(n, generator=g)
         for k in range(0, n, bs):
             xb = Ztr[perm[k:k + bs]]
-            if noise > 0:
+            if noise > 0:  # Gaussian noise augmentation: a simple regulariser for tiny datasets
                 xb = xb + noise * torch.randn(xb.shape, generator=g)
             loss = -model.log_prob(xb).mean()
             opt.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 10.0)
             opt.step()
+
+        # --- monitor clean train / validation NLL ---
         model.eval()
         with torch.no_grad():
             tr = float(-model.log_prob(Ztr).mean())
             va = float(-model.log_prob(Zv).mean()) if Zv is not None else np.nan
         hist.append((ep, tr, va))
+
+        # --- early stopping: keep the best validation state, stop after `patience` bad epochs ---
         if Zv is not None:
             if va < best - 1e-4:
                 best, best_state, best_ep, bad = va, copy.deepcopy(model.state_dict()), ep, 0
@@ -157,17 +182,23 @@ class FlowDetector(Detector):
         self.seed, self.pretrained, self.X_val = seed, pretrained, X_val
 
     def fit(self, X):
-        seed = self.seed + int(abs(X[:, 0].sum()) * 1e4) % 100000  # per-user, deterministic
+        # Seed derived from the training data: different per user, identical across reruns.
+        seed = self.seed + int(abs(X[:, 0].sum()) * 1e4) % 100000
         torch.manual_seed(seed)
         if self.pretrained is not None:
+            # Fine-tune: start from the population flow and keep the population's
+            # standardization, so the pretrained weights stay meaningful.
             p = self.pretrained
             self.std_ = U.Standardizer()
             self.std_.mean_, self.std_.scale_ = p["std_mean"], p["std_scale"]
             self.model_ = RealNVP(X.shape[1], p["n_layers"], p["hidden"]).to(DEVICE)
             self.model_.load_state_dict(p["state_dict"])
         else:
+            # From scratch: standardize with this user's training statistics only.
             self.std_ = U.Standardizer().fit(X)
             self.model_ = RealNVP(X.shape[1], self.n_layers, self.hidden).to(DEVICE)
+        # With validation data (tuning): train up to max_epochs and stop early.
+        # Without (final refit): train exactly `epochs`, the value chosen on validation.
         Zv = self.std_.transform(self.X_val) if self.X_val is not None else None
         ep = self.max_epochs if Zv is not None or self.epochs is None else int(self.epochs)
         self.history_, self.best_epoch_ = train_flow(
@@ -177,6 +208,8 @@ class FlowDetector(Detector):
         return self
 
     def score(self, X):
+        """Log-density in the log-feature space (the Jacobian of the standardization is
+        added), so values are comparable with the Gaussian models."""
         with torch.no_grad():
             lp = self.model_.log_prob(_t(self.std_.transform(X))).double().numpy()
         return lp + self.std_.log_jacobian
@@ -187,13 +220,17 @@ class FlowDetector(Detector):
         return self.std_.inverse_transform(self.model_.sample(n, g).double().numpy())
 
     def get_state(self):
+        """Everything needed to reuse the model: weights + standardization + architecture."""
         return {"state_dict": self.model_.state_dict(), "std_mean": self.std_.mean_,
-                "std_scale": self.std_.scale_, "n_layers": self.model_.layers.__len__(),
+                "std_scale": self.std_.scale_, "n_layers": len(self.model_.layers),
                 "hidden": self.model_.layers[0].net[0].out_features,
                 "best_epoch": self.best_epoch_, "history": self.history_}
 
 
-_PRETRAIN_CACHE: dict = {}  # (protocol/fold key, pretrain params, data fingerprint) -> pretrained
+# Pretraining is the expensive part, and every pretrained grid config uses the same
+# population, so results are shared across FlowSpec instances.
+# key: (protocol/fold key, pretrain params, data fingerprint) -> output of pretrain()
+_PRETRAIN_CACHE: dict = {}
 
 
 def pretrained_models():
@@ -228,6 +265,7 @@ class FlowSpec:
         if self.pretrain:
             key, rows = U.pretrain_population_rows(ctx["protocol"], ctx["user"], ctx["fold"])
             Xp = ctx["X"][rows]
+            # The shape/sum fingerprint keeps caches separate across feature sets.
             ck = (key, tuple(sorted(self.pretrain_params.items())), Xp.shape, float(Xp.sum()))
             if ck not in _PRETRAIN_CACHE:
                 _PRETRAIN_CACHE[ck] = pretrain(Xp, **self.pretrain_params)

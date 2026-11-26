@@ -69,22 +69,29 @@ def evaluate(X, spec, protocol="test", fold=None, users=None, train_fn=None,
             users = [u for u in users if u not in folds[fold]]
     recs, scores, models = [], {}, {}
     for u in users:
+        # 1. Which rows to train on / score / use as population for this user.
         tr = train_fn(u) if train_fn is not None else None
         sp = U.make_split(u, protocol, fold=fold, train=tr, folds=folds)
         pop_rows = spec.population_rows(sp)
+
+        # 2. Hard guard: abort if anything fitted is a test typing.
         U.check_no_leak(protocol, u, sp.train, pop_rows, fold=fold, folds=folds)
+
+        # 3. Build the model; population models receive their data here, not in fit().
         ctx = {"user": u, "protocol": protocol, "fold": fold, "split": sp, "X": X}
         if spec.population:
             ctx["population"] = Population(X[sp.population], U.row_user(sp.population))
         if protocol == "val":
-            ctx["X_val"] = X[sp.genuine]  # for early stopping (flow)
+            ctx["X_val"] = X[sp.genuine]  # validation genuine typings, used by the flow for early stopping
+
+        # 4. Fit, score genuine and impostor typings, compute this user's EER.
         m = spec.build(ctx).fit(X[sp.train])
         g, i = m.score(X[sp.genuine]), m.score(X[sp.impostor])
         rec = {"user": u, "eer": U.eer(g, i), "n_train": len(sp.train)}
         if getattr(m, "is_density", False):
             rec["ll_test"] = float(np.mean(g))       # mean log-lik of genuine held-out typings
             rec["ll_train"] = float(np.mean(m.score(X[sp.train])))
-        for k in ("k_", "best_epoch_", "shrinkage_"):
+        for k in ("k_", "best_epoch_", "shrinkage_"):  # model-specific diagnostics, if present
             if hasattr(m, k):
                 rec[k.rstrip("_")] = float(getattr(m, k))
         recs.append(rec)
