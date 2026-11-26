@@ -6,6 +6,9 @@ Bayesian/MAP, Student-t, GMM, Laplace) and a small RealNVP normalizing flow, com
 with the published distance detectors under the official protocol, plus open-set,
 enrollment-size, template-adaptation and speed-normalization experiments.
 
+gmm-benchmark for our main task experiment: evaluate GMMs against other models on the benchmark
+experiments notebook to expand on our tasks, see how GMM can make sense outside of strict benchmark performance, like making use of each user's learned gaussian
+
 ## 1. Get the code
 
 ```bash
