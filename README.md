@@ -108,6 +108,7 @@ src/flow.py              RealNVP flow (PyTorch, CPU), pretraining + fine-tuning
 src/evaluation.py        protocol runner (official / validation / open-set), tuning
 src/experiments.py       model registry + grids, enrollment, adaptation, GMM diagnostics
 src/plots.py             figure builders (no saving)
+scripts/flush_outputs.py delete old run folders (dry run unless --yes)
 src/saving.py            run folders, config/env before training, save_model / save_figure / save_run
 notebooks/gmm_benchmark.ipynb  GMM vs the published benchmark (main deliverable)
 notebooks/experiments.ipynb    full experiment suite (baseline for extensions)
@@ -136,6 +137,17 @@ Each run writes a new folder `outputs/<NAME><NNN>_<timestamp>/`. Folders are nev
 Each run also appends one row to `outputs/runs_index.csv` (committed). The figures used in
 the report are copied to `outputs/report_figures/` (committed). The dataset, checkpoints and
 raw scores are never committed.
+
+To clear old runs, use `scripts/flush_outputs.py`. It is a dry run unless you pass `--yes`, and it only
+deletes run folders named `<NAME><NNN>_<timestamp>`:
+
+```bash
+python scripts/flush_outputs.py                       # list what a full flush would delete
+python scripts/flush_outputs.py --yes                 # delete all runs, runs_index.csv and report figures
+python scripts/flush_outputs.py --only bench_ --yes   # only runs whose name starts with bench_ (index rows pruned)
+python scripts/flush_outputs.py --before 20261126-000000 --yes   # only runs created before that time
+python scripts/flush_outputs.py --quick --yes         # only outputs/_quick (smoke runs)
+```
 
 ## 8. Results
 
