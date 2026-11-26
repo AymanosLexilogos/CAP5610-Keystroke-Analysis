@@ -191,6 +191,63 @@ def adaptation(X, spec, n0=24, n_imp_attempts=50, refit_every=10, seed=0):
 
 
 # --------------------------------------------------------------------------
+# Published benchmark and comparison tables
+# --------------------------------------------------------------------------
+# Killourhy & Maxion (2009), 31 raw features, official protocol: mean EER (SD) over
+# 51 users, as listed on https://roymaxion.github.io/projects/keystroke-benchmark/
+PUBLISHED_BENCHMARK = pd.DataFrame([
+    ("Manhattan (scaled)", 0.0962, 0.0694), ("Nearest Neighbor (Mahalanobis)", 0.0996, 0.0642),
+    ("Outlier Count (z-score)", 0.1022, 0.0767), ("SVM (one-class)", 0.1025, 0.0650),
+    ("Mahalanobis", 0.1101, 0.0645), ("Mahalanobis (normed)", 0.1101, 0.0645),
+    ("Manhattan (filter)", 0.1360, 0.0828), ("Manhattan", 0.1529, 0.0925),
+    ("Neural Network (auto-assoc)", 0.1614, 0.0797), ("Euclidean", 0.1706, 0.0952),
+    ("Euclidean (normed)", 0.2153, 0.1187), ("Fuzzy Logic", 0.2213, 0.1051),
+    ("k Means", 0.3722, 0.1391), ("Neural Network (standard)", 0.8283, 0.1483),
+], columns=["detector", "eer", "sd"])
+
+# Our detector name -> published name, for the "reproduced" column.
+REPRODUCED_AS = {"Scaled Manhattan": "Manhattan (scaled)", "Mahalanobis": "Mahalanobis",
+                 "Manhattan": "Manhattan", "Euclidean": "Euclidean"}
+
+
+def benchmark_table(new_rows: dict, reproduced: dict | None = None) -> pd.DataFrame:
+    """Published table + our new detectors, sorted by EER, with a rank column.
+
+    new_rows   : label -> EvalResult (evaluated on raw31, official protocol)
+    reproduced : our name -> EvalResult, shown next to the published value
+    """
+    t = PUBLISHED_BENCHMARK.assign(source="published")
+    if reproduced:
+        rep = {REPRODUCED_AS[k]: r.eers.mean() for k, r in reproduced.items() if k in REPRODUCED_AS}
+        t["reproduced_here"] = t.detector.map(rep)
+    new = pd.DataFrame([{"detector": k, "eer": r.eers.mean(), "sd": r.eers.std(ddof=1), "source": "this work"}
+                        for k, r in new_rows.items()])
+    t = pd.concat([t, new], ignore_index=True).sort_values("eer").reset_index(drop=True)
+    t.insert(0, "rank", np.arange(1, len(t) + 1))
+    return t
+
+
+def paired_table(results: dict, base_key: str) -> pd.DataFrame:
+    """One row per model: mean / SD / bootstrap CI of the per-user EER, test log-likelihood,
+    and a paired comparison with ``base_key`` over the same users
+    (diff = model - baseline, so negative = better than the baseline)."""
+    base = results[base_key].eers
+    out = []
+    for name, r in results.items():
+        s = r.summary()
+        row = {"model": name, "mean_eer": s["mean_eer"], "sd": s["sd_eer"],
+               "ci95": f"[{s['ci95_low']:.4f}, {s['ci95_high']:.4f}]",
+               "test_ll_median": s.get("test_ll_median", np.nan), "test_ll_min": s.get("test_ll_min", np.nan)}
+        if name != base_key:
+            p = U.paired_test(r.eers, base)
+            row.update(diff_vs_base=p["mean_diff"],
+                       diff_ci95=f"[{p['diff_ci95_low']:+.4f}, {p['diff_ci95_high']:+.4f}]",
+                       wilcoxon_p=p["wilcoxon_p"], better_worse=f"{p['n_better']}/{p['n_worse']}")
+        out.append(row)
+    return pd.DataFrame(out).sort_values("mean_eer").reset_index(drop=True)
+
+
+# --------------------------------------------------------------------------
 # GMM diagnostics
 # --------------------------------------------------------------------------
 def gmm_session_alignment(X, gmm_models):

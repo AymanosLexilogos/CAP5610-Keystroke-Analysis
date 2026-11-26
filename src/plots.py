@@ -1,5 +1,9 @@
-"""Figure builders. They only return matplotlib figures; saving is done by the
-notebook's save_figure."""
+"""Figure builders for the notebooks.
+
+Every function returns a matplotlib Figure and never writes to disk: saving goes
+through the notebook's saving cell (``run.add_figure`` -> ``save_figure``).
+Colours: blue = real data / baseline, orange = model samples / this work.
+"""
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
@@ -15,6 +19,8 @@ C_REAL, C_MODEL = "#4C72B0", "#DD8452"
 
 
 def raw_vs_log(raw, logx, names, idx=(0, 1, 13)):
+    """Histograms of a few features before (top) and after (bottom) the log transform,
+    pooled over all subjects' training typings."""
     fig, ax = plt.subplots(2, len(idx), figsize=(4 * len(idx), 6))
     tr = U.rows(np.arange(U.N_USERS), 1, U.TRAIN_END)
     for j, k in enumerate(idx):
@@ -48,6 +54,8 @@ def within_between(X, names):
 
 
 def _ellipse(ax, mean, cov, i, j, color, nsd=2.0):
+    """Draw the nsd-standard-deviation ellipse of the (i, j) marginal of N(mean, cov):
+    axes along the eigenvectors, half-lengths nsd * sqrt(eigenvalues)."""
     S = cov[np.ix_([i, j], [i, j])]
     vals, vecs = np.linalg.eigh(S)
     ang = np.degrees(np.arctan2(vecs[1, -1], vecs[0, -1]))
@@ -146,6 +154,7 @@ def det_curves(results: dict, title="DET (vertical average over users)"):
 
 
 def per_user_bars(eer_a, eer_b, label_a, label_b):
+    """Per-subject EER of model A next to model B, subjects sorted by B's EER."""
     o = np.argsort(eer_b)
     fig, ax = plt.subplots(figsize=(12, 3.5))
     x = np.arange(len(o))
@@ -160,6 +169,7 @@ def per_user_bars(eer_a, eer_b, label_a, label_b):
 
 
 def learning_curves(histories: dict, title="RealNVP learning curves (validation run)"):
+    """Train / validation NLL per epoch for up to 8 subjects (history rows: epoch, train, val)."""
     fig, ax = plt.subplots(1, 2, figsize=(11, 3.8))
     for u, h in list(histories.items())[:8]:
         ax[0].plot(h[:, 0], h[:, 1], lw=1, label=f"user {u}")
@@ -189,5 +199,88 @@ def enrollment_plot(df, title="Enrollment size"):
     ax[0].set_ylabel("mean EER (test: sessions 5-8)")
     ax[1].legend(fontsize=7)
     fig.suptitle(title)
+    fig.tight_layout()
+    return fig
+
+
+def benchmark_bars(table, title="CMU benchmark (31 raw features): published detectors + this work"):
+    """Horizontal bars of mean EER; rows from 'this work' highlighted."""
+    t = table[table.eer < 0.5].iloc[::-1]          # drop the 0.83 outlier so the axis stays readable
+    fig, ax = plt.subplots(figsize=(8, 0.35 * len(t) + 1))
+    colors = [C_MODEL if s == "this work" else C_REAL for s in t.source]
+    ax.barh(t.detector, t.eer, xerr=t.sd / np.sqrt(51), color=colors)  # error bar = SD / sqrt(51) (SE)
+    ax.set_xlabel("mean EER over 51 users (error bar = standard error)")
+    ax.set_title(title, fontsize=10)
+    ax.grid(axis="y", visible=False)
+    fig.tight_layout()
+    return fig
+
+
+def k_distribution(k_by_features: dict):
+    """How many users get K = 1, 2, 3 components (BIC), per feature set."""
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    w = 0.8 / len(k_by_features)
+    for j, (fs, ks) in enumerate(k_by_features.items()):
+        cnt = np.bincount(np.asarray(ks, int), minlength=4)[1:]
+        ax.bar(np.arange(1, 4) + (j - (len(k_by_features) - 1) / 2) * w, cnt, w, label=fs)
+    ax.set_xticks([1, 2, 3])
+    ax.set_xlabel("K chosen by BIC")
+    ax.set_ylabel("users")
+    ax.set_title("GMM: number of components per user")
+    ax.legend()
+    fig.tight_layout()
+    return fig
+
+
+def gmm_components_vs_sessions(ctabs: dict, gdiag, gmms: dict, max_users: int = 6):
+    """Heatmaps of component x session counts for users with K >= 2, and the weights of
+    the minor components (small weights = a component that models a few outliers)."""
+    show = list(ctabs)[:max_users]
+    fig, ax = plt.subplots(1, len(show) + 1, figsize=(3.2 * (len(show) + 1), 3.2))
+    ari = gdiag.set_index("user").ari_vs_session
+    for a, u in zip(ax, show):
+        ct = ctabs[u]
+        a.imshow(ct.values, cmap="Blues", aspect="auto")
+        a.set_xticks(range(ct.shape[1]))
+        a.set_yticks(range(len(ct.index)), [f"s{s}" for s in ct.index])
+        for (i, j), v in np.ndenumerate(ct.values):
+            a.text(j, i, v, ha="center", va="center", fontsize=8)
+        a.set_title(f"user {u} (ARI {ari[u]:.2f})", fontsize=9)
+        a.set_xlabel("component")
+        a.grid(False)
+    w = np.concatenate([np.sort(gmms[u].gmm_.weights_)[::-1][1:] for u in gdiag.user])
+    ax[-1].hist(w, bins=15)
+    ax[-1].set_title("weights of minor components")
+    ax[-1].set_xlabel("weight")
+    fig.tight_layout()
+    return fig
+
+
+def adaptation_bars(adapt_table):
+    """Static vs adapted vs oracle template, per model, for each enrollment size n0."""
+    n0s = sorted(adapt_table.n0.unique())
+    fig, ax = plt.subplots(1, len(n0s), figsize=(6 * len(n0s), 4), squeeze=False)
+    for a, n0 in zip(ax[0], n0s):
+        d = adapt_table[adapt_table.n0 == n0].set_index("model")[["eer_static", "eer_adapted", "eer_oracle"]]
+        d.plot.bar(ax=a, rot=30)
+        a.set_title(f"template adaptation, n0={n0}")
+        a.set_ylabel("mean EER (sessions 5-8)")
+    fig.tight_layout()
+    return fig
+
+
+def speed_curves(speed_df, feature_sets, families, ns):
+    """Mean EER vs first-n enrollment size, one panel per feature set."""
+    fig, ax = plt.subplots(1, len(feature_sets), figsize=(5.3 * len(feature_sets), 4), sharey=True, squeeze=False)
+    for a, fs in zip(ax[0], feature_sets):
+        for fam in families:
+            m = speed_df[(speed_df.features == fs) & (speed_df.model == fam)].groupby("n").eer.mean()
+            a.plot(m.index, m.values, marker="o", label=fam)
+        a.set_xscale("log")
+        a.set_xticks(list(ns), [str(n) for n in ns])
+        a.set_title(fs)
+        a.set_xlabel("first n enrollment typings")
+    ax[0, 0].set_ylabel("mean EER")
+    ax[0, -1].legend(fontsize=7)
     fig.tight_layout()
     return fig

@@ -52,14 +52,24 @@ To remove the env: `conda deactivate`, then `conda env remove -n keystroke-gmm`.
 ```bash
 conda activate keystroke-gmm
 jupyter lab                     # open notebooks/, select the kernel "Python (keystroke-gmm)"
-pytest                          # reproduction, leak and likelihood checks (~15 s)
+pytest                          # reproduction, leak, likelihood, flow and saving checks (~15 s)
 ```
 
-* `notebooks/baseline.ipynb`: reproduces the published detectors and doesn't write any files.
-* `notebooks/experiments.ipynb`: all experiments (tuning, official and open-set tables,
-  enrollment size, template adaptation, speed normalization, GMM diagnostics). On a
-  laptop CPU the full run takes about an hour. Headless:
-  `jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=-1 notebooks/experiments.ipynb`
+Three notebooks, all with the same layout (setup → saving helpers → data → models → tuning →
+training & test → figures → evaluation → save):
+
+* `notebooks/gmm_benchmark.ipynb` (**main deliverable**, ~1 min): trains a GMM under the exact CMU
+  benchmark protocol and places it in the published 14-detector table (31 raw features). It then compares
+  it with the distance detectors and with a single Gaussian on equal footing (raw21, log21), using paired
+  tests, and checks what the extra mixture components capture.
+* `notebooks/experiments.ipynb` (**full suite**, ~1 h; the baseline for extensions): every model family
+  (Gaussian variants, GMM, Laplace, Student-t, Bayes/MAP, RealNVP flow), tuning, the official and open-set
+  tables, enrollment size, template adaptation, speed normalization and GMM diagnostics. For a few-minute
+  smoke run, start Jupyter with `KS_QUICK=1` set (output goes to `outputs/_quick/`).
+* `notebooks/baseline.ipynb`: reproduces the four published distance detectors and writes no files.
+
+Headless execution:
+`jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=-1 notebooks/<name>.ipynb`
 
 ### Google Colab alternative
 
@@ -98,8 +108,11 @@ src/flow.py              RealNVP flow (PyTorch, CPU), pretraining + fine-tuning
 src/evaluation.py        protocol runner (official / validation / open-set), tuning
 src/experiments.py       model registry + grids, enrollment, adaptation, GMM diagnostics
 src/plots.py             figure builders (no saving)
-notebooks/baseline.ipynb     published reproduction
-notebooks/experiments.ipynb  all experiments; ONE saving cell does all writing
+src/saving.py            run folders, config/env before training, save_model / save_figure / save_run
+notebooks/gmm_benchmark.ipynb  GMM vs the published benchmark (main deliverable)
+notebooks/experiments.ipynb    full experiment suite (baseline for extensions)
+notebooks/baseline.ipynb       published reproduction
+                         each notebook has ONE saving cell (section 2) and a final "save everything" cell
 tests/                   pytest: reproduction, no-leak, sane log-likelihoods, flow
 data/                    put the CSV here (gitignored)
 outputs/                 run folders (gitignored except runs_index.csv and report_figures/)
@@ -126,4 +139,14 @@ raw scores are never committed.
 
 ## 8. Results
 
-See [RESULTS.md](RESULTS.md) (generated from the last full run of `experiments.ipynb`).
+GMM vs the CMU benchmark (from `notebooks/gmm_benchmark.ipynb`, which also holds the full tables and conclusions):
+
+| features | GMM | single Gaussian | Mahalanobis | Scaled Manhattan |
+|---|---|---|---|---|
+| raw31 (benchmark) | 10.98% (rank 5 of 16) | 11.06% | 11.01% | 9.62% |
+| raw21 (same information) | 10.45% | 11.10% | 11.01% | 9.05% |
+| log21 | 9.78% | 9.74% | 9.74% | 8.55% |
+
+Mean EER over 51 subjects, official protocol. The GMM beats a single Gaussian only on raw21, where the
+extra component models the slow tail of skewed timings. It does not beat Scaled Manhattan on any feature set.
+Results of the full suite are in `notebooks/experiments.ipynb`, section 11.
